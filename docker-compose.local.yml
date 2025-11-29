@@ -1,0 +1,39 @@
+services:
+  payment-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: payment-api
+    image: payment-api
+    volumes:
+      - ./app:/app/app
+    ports:
+      - "8003:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@payment-db:5432/payment_db
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    depends_on:
+      - payment-db
+
+  payment-db:
+    image: postgres:17-alpine
+    container_name: payment-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payment_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - payment-db-data:/var/lib/postgresql/data
+      # - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  payment-db-data:
+    name: payment-db-data
