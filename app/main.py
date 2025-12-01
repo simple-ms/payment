@@ -6,7 +6,11 @@ from . import models
 from .logger import logger
 from .schemas import PaymentCreate
 
-app = FastAPI()
+app = FastAPI(
+    docs_url="/docs/payment",
+    openapi_url="/openapi.json/payment",
+    redoc_url="/redoc/payment"
+)
 
 @app.on_event("startup")
 def startup():
