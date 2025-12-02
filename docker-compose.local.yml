@@ -36,4 +36,3 @@ services:
 
 volumes:
   payment-db-data:
-    name: payment-db-data
