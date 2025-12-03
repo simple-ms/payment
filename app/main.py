@@ -1,7 +1,6 @@
 import uuid
 from typing import List
-from fastapi import FastAPI, HTTPException, Depends, Header, status
-from fastapi.security import HTTPBearer
+from fastapi import FastAPI, HTTPException, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select
@@ -11,6 +10,7 @@ from .models import Payment, PaymentStatus
 from .schemas import PaymentCreate, PaymentResponse
 from .logger import logger
 from .kafka_producer import publish_payment_completed, publish_payment_failed
+from .dependencies import get_current_user_id
 
 app = FastAPI(
     title="Payment Service",
@@ -20,8 +20,6 @@ app = FastAPI(
     openapi_url="/openapi.json/payment",
     redoc_url="/redoc/payment"
 )
-
-security = HTTPBearer()
 
 
 # --- HEALTH CHECK ---
@@ -43,8 +41,7 @@ async def health_check():
 async def process_payment(
     payment: PaymentCreate,
     db: AsyncSession = Depends(get_db),
-    x_user_id: str = Header(None, alias="X-User-Id"),
-    token: str = Depends(security)
+    user_id: str = Depends(get_current_user_id)
 ):
     """
     Process a payment for an order.
@@ -56,14 +53,7 @@ async def process_payment(
     4. Simulate payment processing
     5. Publish payment_completed or payment_failed event to Kafka
     """
-    if not x_user_id:
-        logger.warning("Payment processing failed: Missing X-User-Id header")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
-        )
-
-    logger.info(f"Processing payment for order {payment.order_id} by user {x_user_id}, amount: ${payment.amount}")
+    logger.info(f"Processing payment for order {payment.order_id} by user {user_id}, amount: ${payment.amount}")
     
     try:
         # Check if payment already exists for this order
@@ -91,7 +81,7 @@ async def process_payment(
             logger.info(f"Creating new payment for order {payment.order_id}")
             new_payment = Payment(
                 order_id=payment.order_id,
-                user_id=uuid.UUID(x_user_id),
+                user_id=uuid.UUID(user_id),
                 amount=payment.amount,
                 status=PaymentStatus.PROCESSING,
                 payment_method=payment.payment_method
@@ -186,26 +176,18 @@ async def process_payment(
 )
 async def get_user_payments(
     db: AsyncSession = Depends(get_db),
-    x_user_id: str = Header(None, alias="X-User-Id"),
-    token: str = Depends(security)
+    user_id: str = Depends(get_current_user_id)
 ):
     """
     Get all payments for the authenticated user.
     """
-    if not x_user_id:
-        logger.warning("Get payments failed: Missing X-User-Id header")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
-        )
-
-    logger.info(f"Fetching payments for user {x_user_id}")
+    logger.info(f"Fetching payments for user {user_id}")
     
     try:
-        result = await db.execute(select(Payment).filter(Payment.user_id == x_user_id))
+        result = await db.execute(select(Payment).filter(Payment.user_id == user_id))
         payments = result.scalars().all()
         
-        logger.info(f"Found {len(payments)} payments for user {x_user_id}")
+        logger.info(f"Found {len(payments)} payments for user {user_id}")
         return payments
         
     except SQLAlchemyError as e:
@@ -224,28 +206,20 @@ async def get_user_payments(
 async def get_payment(
     payment_id: str,
     db: AsyncSession = Depends(get_db),
-    x_user_id: str = Header(None, alias="X-User-Id"),
-    token: str = Depends(security)
+    user_id: str = Depends(get_current_user_id)
 ):
     """
     Get a specific payment by ID.
     
     Only the owner of the payment can view it.
     """
-    if not x_user_id:
-        logger.warning("Get payment failed: Missing X-User-Id header")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
-        )
-
-    logger.info(f"Fetching payment {payment_id} for user {x_user_id}")
+    logger.info(f"Fetching payment {payment_id} for user {user_id}")
     
     try:
         result = await db.execute(
             select(Payment).filter(
                 Payment.id == payment_id,
-                Payment.user_id == x_user_id  # Ensure user owns this payment
+                Payment.user_id == user_id  # Ensure user owns this payment
             )
         )
         payment = result.scalar_one_or_none()
@@ -277,28 +251,20 @@ async def get_payment(
 async def get_payment_by_order(
     order_id: str,
     db: AsyncSession = Depends(get_db),
-    x_user_id: str = Header(None, alias="X-User-Id"),
-    token: str = Depends(security)
+    user_id: str = Depends(get_current_user_id)
 ):
     """
     Get payment for a specific order.
     
     Only the owner of the payment can view it.
     """
-    if not x_user_id:
-        logger.warning("Get payment by order failed: Missing X-User-Id header")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
-        )
-
-    logger.info(f"Fetching payment for order {order_id} by user {x_user_id}")
+    logger.info(f"Fetching payment for order {order_id} by user {user_id}")
     
     try:
         result = await db.execute(
             select(Payment).filter(
                 Payment.order_id == order_id,
-                Payment.user_id == x_user_id  # Ensure user owns this payment
+                Payment.user_id == user_id  # Ensure user owns this payment
             )
         )
         payment = result.scalar_one_or_none()
