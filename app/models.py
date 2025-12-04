@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import String, Float, DateTime, Enum as SQLEnum
+from sqlalchemy import String, Float, DateTime, Enum as SQLEnum, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 import enum
@@ -22,7 +22,8 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    order_id: Mapped[uuid.UUID] = mapped_column(index=True)  # Link to order
+    # CRITICAL FIX: Added unique=True to prevent race conditions and duplicate payments
+    order_id: Mapped[uuid.UUID] = mapped_column(index=True, unique=True)
     user_id: Mapped[uuid.UUID] = mapped_column(index=True)
     amount: Mapped[float] = mapped_column(Float)
     status: Mapped[str] = mapped_column(
@@ -30,9 +31,23 @@ class Payment(Base):
         default=PaymentStatus.PENDING
     )
     payment_method: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="card")
-    transaction_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # External payment gateway ID
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, onupdate=datetime.utcnow)
+    transaction_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # FIX: Use timezone-aware datetime
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+    
+    # Additional indexes for common queries
+    __table_args__ = (
+        Index('idx_payment_user_status', 'user_id', 'status'),
+        Index('idx_payment_created_at', 'created_at'),
+    )
     
     def __repr__(self) -> str:
         return f"<Payment(id={self.id}, order_id={self.order_id}, status={self.status}, amount={self.amount})>"

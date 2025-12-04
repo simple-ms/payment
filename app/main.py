@@ -3,8 +3,9 @@ from typing import List
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from .database import get_db
 from .models import Payment, PaymentStatus
@@ -25,7 +26,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,9 +36,25 @@ app.add_middleware(
 # --- HEALTH CHECK ---
 
 @app.get("/payment/health", tags=["Health"])
-async def health_check():
-    """Health check endpoint for monitoring."""
-    return {"status": "healthy", "service": "payment-service"}
+async def health_check(db: AsyncSession = Depends(get_db)):
+    """Health check endpoint with database connectivity check."""
+    try:
+        await db.execute(select(1))
+        return {
+            "status": "healthy",
+            "service": "payment-service",
+            "database": "connected"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "status": "unhealthy",
+                "service": "payment-service",
+                "database": "disconnected"
+            }
+        )
 
 
 # --- PAYMENT ENDPOINTS ---
@@ -56,9 +73,12 @@ async def process_payment(
     """
     Process a payment for an order.
     
+    Uses database-level unique constraint on order_id to prevent race conditions
+    and duplicate payments.
+    
     Steps:
     1. Validate user authentication
-    2. Check if payment already exists for the order
+    2. Check if payment already exists (using upsert pattern)
     3. Create/update payment record
     4. Simulate payment processing
     5. Publish payment_completed or payment_failed event to Kafka
@@ -67,7 +87,11 @@ async def process_payment(
     
     try:
         # Check if payment already exists for this order
-        result = await db.execute(select(Payment).filter(Payment.order_id == payment.order_id))
+        result = await db.execute(
+            select(Payment)
+            .filter(Payment.order_id == payment.order_id)
+            .with_for_update()  # Lock the row to prevent race conditions
+        )
         existing_payment = result.scalar_one_or_none()
         
         if existing_payment:
@@ -76,7 +100,10 @@ async def process_payment(
                 logger.warning(f"Payment already completed for order {payment.order_id}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Payment already completed for this order"
+                    detail={
+                        "error_code": "PAYMENT_ALREADY_COMPLETED",
+                        "message": "Payment already completed for this order"
+                    }
                 )
             
             logger.info(f"Updating existing payment {existing_payment.id} for order {payment.order_id}")
@@ -89,20 +116,37 @@ async def process_payment(
         else:
             # Create new payment
             logger.info(f"Creating new payment for order {payment.order_id}")
-            new_payment = Payment(
-                order_id=payment.order_id,
-                user_id=uuid.UUID(user_id),
-                amount=payment.amount,
-                status=PaymentStatus.PROCESSING,
-                payment_method=payment.payment_method
-            )
-            db.add(new_payment)
-            await db.commit()
-            await db.refresh(new_payment)
-            current_payment = new_payment
+            try:
+                new_payment = Payment(
+                    order_id=payment.order_id,
+                    user_id=uuid.UUID(user_id),
+                    amount=payment.amount,
+                    status=PaymentStatus.PROCESSING,
+                    payment_method=payment.payment_method
+                )
+                db.add(new_payment)
+                await db.commit()
+                await db.refresh(new_payment)
+                current_payment = new_payment
+            except IntegrityError:
+                # Race condition: another request created the payment first
+                await db.rollback()
+                logger.warning(f"Race condition detected for order {payment.order_id}, retrying...")
+                # Fetch the existing payment
+                result = await db.execute(
+                    select(Payment).filter(Payment.order_id == payment.order_id)
+                )
+                current_payment = result.scalar_one()
+                if current_payment.status == PaymentStatus.COMPLETED:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "error_code": "PAYMENT_ALREADY_COMPLETED",
+                            "message": "Payment already completed for this order"
+                        }
+                    )
         
         # Simulate payment processing
-        # In a real scenario, this would integrate with a payment gateway (Stripe, PayPal, etc.)
         payment_successful = simulate_payment_processing(payment.amount)
         
         if payment_successful:
@@ -158,7 +202,10 @@ async def process_payment(
             
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Payment processing failed"
+                detail={
+                    "error_code": "PAYMENT_FAILED",
+                    "message": "Payment processing failed"
+                }
             )
         
     except HTTPException:
@@ -186,15 +233,25 @@ async def process_payment(
 )
 async def get_user_payments(
     db: AsyncSession = Depends(get_db),
-    user_id: str = Depends(get_current_user_id)
+    user_id: str = Depends(get_current_user_id),
+    skip: int = 0,
+    limit: int = 100
 ):
     """
-    Get all payments for the authenticated user.
+    Get all payments for the authenticated user with pagination.
     """
-    logger.info(f"Fetching payments for user {user_id}")
+    limit = min(limit, 100)  # Cap at 100
+    
+    logger.info(f"Fetching payments for user {user_id}: skip={skip}, limit={limit}")
     
     try:
-        result = await db.execute(select(Payment).filter(Payment.user_id == user_id))
+        result = await db.execute(
+            select(Payment)
+            .filter(Payment.user_id == user_id)
+            .order_by(Payment.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
         payments = result.scalars().all()
         
         logger.info(f"Found {len(payments)} payments for user {user_id}")
@@ -229,7 +286,7 @@ async def get_payment(
         result = await db.execute(
             select(Payment).filter(
                 Payment.id == payment_id,
-                Payment.user_id == user_id  # Ensure user owns this payment
+                Payment.user_id == user_id
             )
         )
         payment = result.scalar_one_or_none()
@@ -274,7 +331,7 @@ async def get_payment_by_order(
         result = await db.execute(
             select(Payment).filter(
                 Payment.order_id == order_id,
-                Payment.user_id == user_id  # Ensure user owns this payment
+                Payment.user_id == user_id
             )
         )
         payment = result.scalar_one_or_none()
@@ -313,10 +370,6 @@ def simulate_payment_processing(amount: float) -> bool:
     Returns:
         True if payment successful, False otherwise
     """
-    # Simulate payment gateway processing
-    # In reality, you would call Stripe, PayPal, etc. here
-    
-    # Simple simulation: fail if amount is too high
     if amount > 10000:
         logger.warning(f"Simulated payment failure: amount ${amount} exceeds limit")
         return False
