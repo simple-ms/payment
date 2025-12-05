@@ -7,7 +7,7 @@ This script starts the Kafka consumer to listen for order events.
 import sys
 import signal
 import logging
-from app.kafka_consumer import start_order_event_consumer
+from .kafka_consumer import start_order_event_consumer
 
 # Setup logging
 logging.basicConfig(
