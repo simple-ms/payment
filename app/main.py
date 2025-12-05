@@ -1,7 +1,6 @@
 import uuid
 from typing import List
 from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy import select
@@ -13,7 +12,6 @@ from .schemas import PaymentCreate, PaymentResponse
 from .logger import logger
 from .kafka_producer import publish_payment_completed, publish_payment_failed
 from .dependencies import get_current_user_id
-from .settings import cors_settings
 
 app = FastAPI(
     title="Payment Service",
@@ -24,14 +22,7 @@ app = FastAPI(
     redoc_url="/redoc/payment"
 )
 
-# Add CORS middleware with configurable settings
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_settings.origins_list,
-    allow_credentials=cors_settings.CORS_ALLOW_CREDENTIALS,
-    allow_methods=[cors_settings.CORS_ALLOW_METHODS],
-    allow_headers=[cors_settings.CORS_ALLOW_HEADERS],
-)
+# NOTE: CORS is handled by nginx gateway - no CORS middleware here
 
 
 # --- HEALTH CHECK ---
