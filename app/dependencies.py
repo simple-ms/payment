@@ -1,30 +1,46 @@
-from fastapi import Header, HTTPException, status
-from .logger import logger
+from uuid import UUID
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .database import get_db
+from .repository import PaymentRepository
+from .repository.credit_card_repository import CreditCardRepository
+from .services import PaymentService
+from .services.credit_card_service import CreditCardService
 
 
-async def get_current_user_id(
-    x_user_id: str = Header(None, alias="X-User-Id", include_in_schema=False)
-) -> str:
+async def get_payment_repository(db: AsyncSession = Depends(get_db)) -> PaymentRepository:
+    """Dependency to get PaymentRepository instance."""
+    return PaymentRepository(db)
+
+
+async def get_payment_service(
+    payment_repository: PaymentRepository = Depends(get_payment_repository)
+) -> PaymentService:
+    """Dependency to get PaymentService instance."""
+    return PaymentService(payment_repository)
+
+
+async def get_current_user_id(x_user_id: str = Header(..., alias="X-User-Id")) -> UUID:
     """
-    Extract and validate user ID from X-User-Id header.
-    
-    This header is automatically set by Nginx after JWT validation.
-    Users don't need to provide this manually.
-    
-    Args:
-        x_user_id: User ID from request header (auto-injected by Nginx)
-        
-    Returns:
-        User ID string
-        
-    Raises:
-        HTTPException: If X-User-Id header is missing
+    Extract user ID from X-User-Id header set by Nginx after token validation.
     """
-    if not x_user_id:
-        logger.warning("Request failed: Missing X-User-Id header")
+    try:
+        return UUID(x_user_id)
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized - Missing user identification"
+            detail="Invalid user ID in header"
         )
-    
-    return x_user_id
+
+
+async def get_credit_card_repository(db: AsyncSession = Depends(get_db)) -> CreditCardRepository:
+    """Dependency to get CreditCardRepository instance."""
+    return CreditCardRepository(db)
+
+
+async def get_credit_card_service(
+    card_repository: CreditCardRepository = Depends(get_credit_card_repository)
+) -> CreditCardService:
+    """Dependency to get CreditCardService instance."""
+    return CreditCardService(card_repository)
