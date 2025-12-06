@@ -9,14 +9,20 @@ services:
       - ./app:/app/app
     ports:
       - "8003:8000"
-    environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@payment-db:5432/payment_db
     command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     depends_on:
       - payment-db
+    env_file:
+      - .env
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8000/payment/health || exit 1" ]
+      interval: 1m30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
 
   payment-db:
-    image: postgres:17-alpine
+    image: postgres:17
     container_name: payment-db
     restart: always
     environment:
@@ -36,3 +42,4 @@ services:
 
 volumes:
   payment-db-data:
+    name: payment-db-data
