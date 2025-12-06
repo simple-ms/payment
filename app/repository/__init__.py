@@ -1,8 +1,8 @@
 from .payment_repository import PaymentRepository
-from .create_payment_repository import CreatePaymentRepository
+from .credit_card_repository import CreditCardRepository
 
 __all__ = [
     "PaymentRepository",
-    "CreatePaymentRepository",
+    "CreditCardRepository",
 ]
 
