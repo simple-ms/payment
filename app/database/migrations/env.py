@@ -17,7 +17,7 @@ sys.path.append(os.getcwd())
 # --------------------------------------------------------
 from app.database import Base          # Your declarative Base
 from app.settings import settings      # Loaded from env/Docker
-from app.models import payment, credit_card                 # Ensure models are imported
+from app import models                 # Ensure models are imported
 
 # ----------------------------------------------------------------
 # Alembic Config
