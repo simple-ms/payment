@@ -1,38 +1,52 @@
+"""
+Async Kafka producer for Payment Service.
+Publishes payment events using aiokafka.
+"""
 import json
-import logging
 from typing import Dict, Any, Optional
-from kafka import KafkaProducer
-from kafka.errors import KafkaError
-from .settings import settings
+from aiokafka import AIOKafkaProducer
+from aiokafka.errors import KafkaError
+from ..settings import settings
+from ..logger import logger
 
 
-logger = logging.getLogger("payment-service")
-
-
-class KafkaProducerClient:
-    """Kafka producer client for publishing payment events."""
+class AsyncKafkaProducerClient:
+    """Async Kafka producer client for publishing payment events."""
     
     def __init__(self):
-        self.producer: Optional[KafkaProducer] = None
-        self._connect()
+        self.producer: Optional[AIOKafkaProducer] = None
+        self._started = False
     
-    def _connect(self):
-        """Initialize Kafka producer connection."""
+    async def start(self):
+        """Initialize and start Kafka producer connection."""
+        if self._started:
+            return
+        
         try:
-            self.producer = KafkaProducer(
+            self.producer = AIOKafkaProducer(
                 bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
                 value_serializer=lambda v: json.dumps(v).encode('utf-8'),
                 key_serializer=lambda k: k.encode('utf-8') if k else None,
-                acks='all',  # Wait for all replicas to acknowledge
-                retries=3,
-                max_in_flight_requests_per_connection=1  # Ensure ordering
+                acks='all',
+                enable_idempotence=True,
+                max_in_flight_requests_per_connection=1
             )
-            logger.info(f"Kafka producer connected to {settings.KAFKA_BOOTSTRAP_SERVERS}")
+            await self.producer.start()
+            self._started = True
+            logger.info(f"Async Kafka producer connected to {settings.KAFKA_BOOTSTRAP_SERVERS}")
         except Exception as e:
-            logger.error(f"Failed to connect Kafka producer: {str(e)}")
+            logger.error(f"Failed to start async Kafka producer: {str(e)}")
             self.producer = None
+            self._started = False
     
-    def send_event(self, topic: str, event_data: Dict[str, Any], key: Optional[str] = None) -> bool:
+    async def stop(self):
+        """Stop Kafka producer connection."""
+        if self.producer and self._started:
+            await self.producer.stop()
+            self._started = False
+            logger.info("Async Kafka producer stopped")
+    
+    async def send_event(self, topic: str, event_data: Dict[str, Any], key: Optional[str] = None) -> bool:
         """
         Send an event to Kafka topic.
         
@@ -44,17 +58,18 @@ class KafkaProducerClient:
         Returns:
             True if successful, False otherwise
         """
+        if not self.producer or not self._started:
+            await self.start()
+        
         if not self.producer:
             logger.error("Kafka producer not initialized")
             return False
         
         try:
-            future = self.producer.send(topic, value=event_data, key=key)
-            # Wait for send to complete (with timeout)
-            record_metadata = future.get(timeout=10)
+            metadata = await self.producer.send_and_wait(topic, value=event_data, key=key)
             logger.info(
                 f"Event sent to topic '{topic}': "
-                f"partition={record_metadata.partition}, offset={record_metadata.offset}"
+                f"partition={metadata.partition}, offset={metadata.offset}"
             )
             return True
         except KafkaError as e:
@@ -63,19 +78,13 @@ class KafkaProducerClient:
         except Exception as e:
             logger.error(f"Unexpected error sending event: {str(e)}")
             return False
-    
-    def close(self):
-        """Close Kafka producer connection."""
-        if self.producer:
-            self.producer.close()
-            logger.info("Kafka producer closed")
 
 
 # Global producer instance
-kafka_producer = KafkaProducerClient()
+kafka_producer = AsyncKafkaProducerClient()
 
 
-def publish_payment_completed(payment_data: Dict[str, Any]) -> bool:
+async def publish_payment_completed(payment_data: Dict[str, Any]) -> bool:
     """
     Publish payment_completed event.
     
@@ -93,14 +102,14 @@ def publish_payment_completed(payment_data: Dict[str, Any]) -> bool:
         "amount": payment_data["amount"],
         "status": payment_data["status"]
     }
-    return kafka_producer.send_event(
+    return await kafka_producer.send_event(
         topic="payment-events",
         event_data=event,
         key=str(payment_data["payment_id"])
     )
 
 
-def publish_payment_failed(payment_data: Dict[str, Any], reason: str) -> bool:
+async def publish_payment_failed(payment_data: Dict[str, Any], reason: str) -> bool:
     """
     Publish payment_failed event.
     
@@ -119,7 +128,7 @@ def publish_payment_failed(payment_data: Dict[str, Any], reason: str) -> bool:
         "amount": payment_data["amount"],
         "reason": reason
     }
-    return kafka_producer.send_event(
+    return await kafka_producer.send_event(
         topic="payment-events",
         event_data=event,
         key=str(payment_data["payment_id"])

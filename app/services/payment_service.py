@@ -10,7 +10,7 @@ from ..schemas.payment import PaymentCreate, PaymentResponse
 from ..repository import PaymentRepository
 from ..settings import settings
 from ..logger import logger
-from ..kafka_producer import publish_payment_completed, publish_payment_failed
+from ..kafka.producer import publish_payment_completed, publish_payment_failed
 
 
 class PaymentService:
@@ -130,7 +130,7 @@ class PaymentService:
                         logger.error(f"Failed to update order status: {str(e)}")
                 
                 # Step 7a: Publish payment_completed event
-                event_published = publish_payment_completed({
+                event_published = await publish_payment_completed({
                     "payment_id": payment.id,
                     "order_id": payment.order_id,
                     "user_id": payment.user_id,
@@ -150,7 +150,7 @@ class PaymentService:
                 logger.warning(f"Payment failed: {payment.id}")
                 
                 # Step 6b: Publish payment_failed event
-                publish_payment_failed({
+                await publish_payment_failed({
                     "payment_id": payment.id,
                     "order_id": payment.order_id,
                     "user_id": payment.user_id,

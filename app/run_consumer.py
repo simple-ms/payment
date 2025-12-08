@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Kafka consumer runner for Payment Service.
-This script starts the Kafka consumer to listen for order events.
+This script starts the async Kafka consumer to listen for order events.
 """
 
 import sys
 import signal
 import logging
-from .kafka_consumer import start_order_event_consumer
+import asyncio
+from .kafka.consumer import start_order_event_consumer
 
 # Setup logging
 logging.basicConfig(
@@ -28,11 +29,11 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    logger.info("Starting Payment Service Kafka Consumer...")
+    logger.info("Starting Payment Service Async Kafka Consumer...")
     logger.info("Listening for order events...")
     
     try:
-        start_order_event_consumer()
+        asyncio.run(start_order_event_consumer())
     except Exception as e:
         logger.error(f"Consumer error: {str(e)}")
         sys.exit(1)
